@@ -1,0 +1,842 @@
+diff --git a/cmd/cc-connect/main.go b/cmd/cc-connect/main.go
+index fc2589a..0bbfa26 100644
+--- a/cmd/cc-connect/main.go
++++ b/cmd/cc-connect/main.go
+@@ -713,6 +713,7 @@ func main() {
+ 				maxTokens = 12000
+ 			}
+ 			engine.SetAutoCompressConfigWithSource(true, maxTokens, minGap, proj.AutoCompress.AllowHeuristic)
++			applyAutoCompressHardLimit(engine, proj.Name, proj.AutoCompress, maxTokens)
+ 		}
+ 		resetIdle, defaulted := resolveResetOnIdle(proj.ResetOnIdleMins)
+ 		engine.SetResetOnIdle(resetIdle)
+@@ -1847,8 +1848,10 @@ func reloadConfig(configPath, projName string, engine *core.Engine) (*core.Confi
+ 			maxTokens = 12000
+ 		}
+ 		engine.SetAutoCompressConfigWithSource(true, maxTokens, minGap, proj.AutoCompress.AllowHeuristic)
++		applyAutoCompressHardLimit(engine, proj.Name, proj.AutoCompress, maxTokens)
+ 	} else {
+ 		engine.SetAutoCompressConfig(false, 0, 0)
++		engine.SetAutoCompressHardLimit(0, 0)
+ 	}
+ 	resetIdle, defaulted := resolveResetOnIdle(proj.ResetOnIdleMins)
+ 	engine.SetResetOnIdle(resetIdle)
+@@ -2148,3 +2151,17 @@ func derefInt(v *int) int {
+ 	}
+ 	return *v
+ }
++
++// applyAutoCompressHardLimit wires the optional [projects.auto_compress]
++// hard_max_tokens / hard_min_gap_mins ceiling into the engine. Unset or
++// non-positive hard_max_tokens disables it; hard_min_gap_mins defaults to
++// core.DefaultAutoCompressHardMinGap when unset or non-positive.
++func applyAutoCompressHardLimit(engine *core.Engine, projName string, ac config.AutoCompressConfig, maxTokens int) {
++	hardMax := derefInt(ac.HardMaxTokens)
++	hardMinGap := time.Duration(derefInt(ac.HardMinGapMins)) * time.Minute
++	engine.SetAutoCompressHardLimit(hardMax, hardMinGap)
++	if hardMax > 0 && hardMax <= maxTokens {
++		slog.Warn("auto_compress: hard_max_tokens is not above max_tokens; the hard path will fire whenever max_tokens is reached and hard_min_gap_mins has elapsed",
++			"project", projName, "max_tokens", maxTokens, "hard_max_tokens", hardMax)
++	}
++}
+diff --git a/config.example.toml b/config.example.toml
+index d655b42..c10334e 100644
+--- a/config.example.toml
++++ b/config.example.toml
+@@ -360,6 +360,16 @@ level = "info" # debug, info, warn, error
+ #                          # is routinely several times off. Agents with no usage
+ #                          # reporting at all always use the heuristic — for them it is
+ #                          # the only mechanism available, and this flag does not apply.
++# hard_max_tokens = 0      # optional hard ceiling (default 0 = off). When the estimate
++#                          # reaches it (and max_tokens), compress even if min_gap_mins
++#                          # has not elapsed yet — keeps a very busy chat from growing far
++#                          # past max_tokens while it waits out the normal gap. Set it
++#                          # above max_tokens, e.g. max_tokens = 120000, hard_max_tokens = 200000.
++#                          # 可选硬上限（默认 0=关闭）：估算值达到它时可无视 min_gap_mins 提前压缩。
++# hard_min_gap_mins = 3    # minimum minutes since the previous auto-compress required on
++#                          # the hard_max_tokens path (default 3), so a compaction that
++#                          # still leaves the context above the ceiling cannot loop.
++#                          # 走硬上限路径时距上次自动压缩的最小间隔（默认 3 分钟），防止反复压缩。
+ #                          # 当「有能力上报精确用量的 agent」暂时还没上报时，是否退回文本
+ #                          # 长度启发式估算。默认关闭：宁可等到精确值。该启发式只统计
+ #                          # cc-connect 自身的对话文本，忽略 tool_result 与系统提示词/
+diff --git a/config/autocompress_hardlimit_test.go b/config/autocompress_hardlimit_test.go
+new file mode 100644
+index 0000000..41c8d78
+--- /dev/null
++++ b/config/autocompress_hardlimit_test.go
+@@ -0,0 +1,81 @@
++package config
++
++import "testing"
++
++// Local patch: [projects.auto_compress] hard_max_tokens / hard_min_gap_mins.
++
++const projectWithAutoCompressHardLimitFixture = `
++[[projects]]
++name = "beta"
++
++[projects.auto_compress]
++enabled = true
++max_tokens = 120000
++min_gap_mins = 60
++hard_max_tokens = 200000
++hard_min_gap_mins = 5
++
++[projects.agent]
++type = "codex"
++
++[projects.agent.options]
++work_dir = "/tmp/beta"
++
++[[projects.platforms]]
++type = "telegram"
++
++[projects.platforms.options]
++bot_token = "token_xxx"
++`
++
++const projectWithAutoCompressLegacyFixture = `
++[[projects]]
++name = "beta"
++
++[projects.auto_compress]
++enabled = true
++max_tokens = 120000
++min_gap_mins = 60
++
++[projects.agent]
++type = "codex"
++
++[projects.agent.options]
++work_dir = "/tmp/beta"
++
++[[projects.platforms]]
++type = "telegram"
++
++[projects.platforms.options]
++bot_token = "token_xxx"
++`
++
++func TestLoad_ParsesAutoCompressHardLimit(t *testing.T) {
++	cfg, err := Load(writeConfigFixture(t, projectWithAutoCompressHardLimitFixture))
++	if err != nil {
++		t.Fatalf("Load returned error: %v", err)
++	}
++	ac := cfg.Projects[0].AutoCompress
++	if ac.HardMaxTokens == nil || *ac.HardMaxTokens != 200000 {
++		t.Fatalf("hard_max_tokens = %v, want 200000", ac.HardMaxTokens)
++	}
++	if ac.HardMinGapMins == nil || *ac.HardMinGapMins != 5 {
++		t.Fatalf("hard_min_gap_mins = %v, want 5", ac.HardMinGapMins)
++	}
++}
++
++// Existing configs without the new keys must load unchanged: both stay nil,
++// which cmd/cc-connect maps to "hard limit disabled".
++func TestLoad_AutoCompressHardLimitDefaultsUnset(t *testing.T) {
++	cfg, err := Load(writeConfigFixture(t, projectWithAutoCompressLegacyFixture))
++	if err != nil {
++		t.Fatalf("Load returned error: %v", err)
++	}
++	ac := cfg.Projects[0].AutoCompress
++	if ac.HardMaxTokens != nil || ac.HardMinGapMins != nil {
++		t.Fatalf("expected hard_max_tokens/hard_min_gap_mins to default to nil, got %v / %v", ac.HardMaxTokens, ac.HardMinGapMins)
++	}
++	if ac.MaxTokens == nil || *ac.MaxTokens != 120000 || ac.MinGapMins == nil || *ac.MinGapMins != 60 {
++		t.Fatalf("legacy auto_compress keys not parsed as before: %+v", ac)
++	}
++}
+diff --git a/config/config.go b/config/config.go
+index e3dd87a..e343b49 100644
+--- a/config/config.go
++++ b/config/config.go
+@@ -470,6 +470,15 @@ type AutoCompressConfig struct {
+ 	// heuristic is the only mechanism that has ever existed, and removing it
+ 	// would silently disable auto-compress for most of cc-connect's agents.
+ 	AllowHeuristic bool `toml:"allow_heuristic,omitempty"`
++	// HardMaxTokens is an optional hard ceiling (default 0 = disabled). When
++	// the estimate reaches it, auto-compress may run before min_gap_mins has
++	// elapsed, so a very active session does not grow far past max_tokens
++	// while waiting out the normal gap.
++	HardMaxTokens *int `toml:"hard_max_tokens,omitempty"`
++	// HardMinGapMins is the minimum number of minutes since the previous
++	// automatic compression required on the hard_max_tokens path (default 3),
++	// so a compaction that leaves the context above the ceiling cannot thrash.
++	HardMinGapMins *int `toml:"hard_min_gap_mins,omitempty"`
+ }
+ 
+ // ObserveConfig controls forwarding of native terminal Claude Code sessions to a messaging platform.
+diff --git a/core/autocompress_hardlimit_test.go b/core/autocompress_hardlimit_test.go
+new file mode 100644
+index 0000000..961d40a
+--- /dev/null
++++ b/core/autocompress_hardlimit_test.go
+@@ -0,0 +1,203 @@
++package core
++
++import (
++	"testing"
++	"time"
++)
++
++// Local patch: [projects.auto_compress] hard_max_tokens / hard_min_gap_mins.
++//
++// A very active session can cross max_tokens again shortly after an automatic
++// compression and then keep growing for the whole min_gap_mins window. The
++// optional hard ceiling lets auto-compress fire early once the estimate reaches
++// hard_max_tokens, still rate-limited by hard_min_gap_mins so a compaction that
++// leaves the context above the ceiling cannot thrash.
++
++// legacyAutoCompressTriggered is the pre-patch trigger formula, kept here so the
++// hard_max_tokens = 0 case can be checked against it verbatim.
++func legacyAutoCompressTriggered(estimate, maxTokens int, minGap time.Duration, last, now time.Time) bool {
++	return estimate >= maxTokens && (last.IsZero() || now.Sub(last) >= minGap)
++}
++
++func TestAutoCompressDecision_HardLimit(t *testing.T) {
++	now := time.Date(2026, 11, 24, 12, 0, 0, 0, time.UTC)
++	ago := func(d time.Duration) time.Time { return now.Add(-d) }
++
++	for _, tc := range []struct {
++		name       string
++		hardMax    int
++		hardMinGap time.Duration
++		estimate   int
++		last       time.Time
++		want       bool
++		wantReason string
++	}{
++		{"below max never triggers", 200_000, 3 * time.Minute, 119_999, ago(2 * time.Hour), false, "none"},
++		{"first compression is normal", 200_000, 3 * time.Minute, 120_000, time.Time{}, true, "normal"},
++		{"min gap elapsed is normal", 200_000, 3 * time.Minute, 250_000, ago(60 * time.Minute), true, "normal"},
++		{"above max, below hard, inside min gap waits", 200_000, 3 * time.Minute, 150_000, ago(15 * time.Minute), false, "none"},
++		{"above hard inside min gap triggers via hard path", 200_000, 3 * time.Minute, 230_000, ago(15 * time.Minute), true, "hard"},
++		{"exactly hard max triggers via hard path", 200_000, 3 * time.Minute, 200_000, ago(3 * time.Minute), true, "hard"},
++		{"above hard inside hard min gap does not trigger", 200_000, 3 * time.Minute, 385_000, ago(2 * time.Minute), false, "none"},
++		{"hard min gap defaults to 3m when unset", 200_000, 0, 230_000, ago(2 * time.Minute), false, "none"},
++		{"hard min gap default elapsed", 200_000, 0, 230_000, ago(3 * time.Minute), true, "hard"},
++		{"custom hard min gap respected", 200_000, 10 * time.Minute, 230_000, ago(5 * time.Minute), false, "none"},
++		{"hard max 0 disables the hard path", 0, 3 * time.Minute, 385_000, ago(15 * time.Minute), false, "none"},
++		{"negative hard max disables the hard path", -1, 3 * time.Minute, 385_000, ago(15 * time.Minute), false, "none"},
++	} {
++		t.Run(tc.name, func(t *testing.T) {
++			e := NewEngine("test", &stubAgent{}, nil, "", LangEnglish)
++			e.SetAutoCompressConfig(true, 120_000, 60*time.Minute)
++			e.SetAutoCompressHardLimit(tc.hardMax, tc.hardMinGap)
++
++			got, reason := e.autoCompressDecision(tc.estimate, tc.last, now)
++			if got != tc.want || reason != tc.wantReason {
++				t.Fatalf("autoCompressDecision(%d, last=%v) = (%v, %q), want (%v, %q)",
++					tc.estimate, now.Sub(tc.last), got, reason, tc.want, tc.wantReason)
++			}
++		})
++	}
++}
++
++// With hard_max_tokens unset (never configured) or explicitly 0, the decision
++// must match the original formula for every combination of estimate and gap.
++func TestAutoCompressDecision_HardLimitDisabled_MatchesLegacy(t *testing.T) {
++	now := time.Date(2026, 11, 24, 12, 0, 0, 0, time.UTC)
++	const maxTokens = 120_000
++	const minGap = 60 * time.Minute
++
++	estimates := []int{0, 1, 119_999, 120_000, 120_001, 230_000, 385_000, 10_000_000}
++	gaps := []time.Duration{-1, 0, time.Second, 2 * time.Minute, 3 * time.Minute, 15 * time.Minute,
++		59*time.Minute + 59*time.Second, 60 * time.Minute, 2 * time.Hour}
++
++	for _, configure := range []struct {
++		name string
++		set  func(e *Engine)
++	}{
++		{"never configured", func(e *Engine) {}},
++		{"explicit zero", func(e *Engine) { e.SetAutoCompressHardLimit(0, 0) }},
++		{"zero with custom gap", func(e *Engine) { e.SetAutoCompressHardLimit(0, time.Minute) }},
++	} {
++		t.Run(configure.name, func(t *testing.T) {
++			e := NewEngine("test", &stubAgent{}, nil, "", LangEnglish)
++			e.SetAutoCompressConfig(true, maxTokens, minGap)
++			configure.set(e)
++
++			for _, est := range estimates {
++				for _, gap := range gaps {
++					last := time.Time{}
++					if gap >= 0 {
++						last = now.Add(-gap)
++					}
++					want := legacyAutoCompressTriggered(est, maxTokens, minGap, last, now)
++					got, reason := e.autoCompressDecision(est, last, now)
++					if got != want {
++						t.Fatalf("estimate=%d gap=%v: got %v (%s), legacy formula says %v", est, gap, got, reason, want)
++					}
++					if got && reason != "normal" {
++						t.Fatalf("estimate=%d gap=%v: triggered with reason %q, want \"normal\"", est, gap, reason)
++					}
++				}
++			}
++		})
++	}
++}
++
++// runAutoCompressTurn drives one full turn through processInteractiveEvents
++// (the same path as TestAutoCompress_TriggerAfterResult) with exact usage
++// `used` and the previous automatic compression at `lastAgo` ago. It returns
++// the commands the agent session received and the state, after waiting `wait`
++// for the turn to settle (or until a send arrives when expectSend is true).
++func runAutoCompressTurn(t *testing.T, e *Engine, p Platform, used int, lastAgo time.Duration, expectSend bool) ([]string, *interactiveState) {
++	t.Helper()
++	sess := newQueuingSession("auto-compress-hard")
++	sess.contextUsage = &ContextUsage{UsedTokens: used, ContextWindow: 1_000_000}
++
++	key := "test:user1"
++	state := &interactiveState{
++		agentSession:       sess,
++		platform:           p,
++		replyCtx:           "ctx",
++		lastAutoCompressAt: time.Now().Add(-lastAgo),
++	}
++	e.interactiveMu.Lock()
++	e.interactiveStates[key] = state
++	e.interactiveMu.Unlock()
++
++	session := e.sessions.GetOrCreateActive(key)
++	session.AddHistory("user", "hello world")
++
++	go e.processInteractiveEvents(state, session, e.sessions, key, "msg1", time.Now(), func() {}, nil, nil, 0)
++	sess.events <- Event{Type: EventResult, Content: "response", Done: true}
++
++	if expectSend {
++		deadline := time.After(2 * time.Second)
++		for {
++			sess.sendMu.Lock()
++			n := len(sess.sendCalls)
++			sess.sendMu.Unlock()
++			if n > 0 {
++				break
++			}
++			select {
++			case <-deadline:
++				t.Fatal("timed out waiting for auto-compress send")
++			default:
++				time.Sleep(10 * time.Millisecond)
++			}
++		}
++	} else {
++		time.Sleep(300 * time.Millisecond)
++	}
++
++	sess.sendMu.Lock()
++	defer sess.sendMu.Unlock()
++	return append([]string(nil), sess.sendCalls...), state
++}
++
++func newHardLimitEngine(hardMax int, hardMinGap time.Duration) (*Engine, Platform) {
++	p := &stubPlatformEngine{n: "test"}
++	agent := &stubCompressorAgent{cmd: "/compact"}
++	e := NewEngine("test", agent, []Platform{p}, "", LangEnglish)
++	// Mirrors the deployment that motivated the patch: max 120K, min gap 60m.
++	e.SetAutoCompressConfig(true, 120_000, 60*time.Minute)
++	e.SetAutoCompressHardLimit(hardMax, hardMinGap)
++	return e, p
++}
++
++// 15 minutes after the last auto-compress the session is already at 230K:
++// min_gap (60m) has not elapsed, but hard_max_tokens (200K) is exceeded and
++// hard_min_gap (3m) has elapsed, so it must compress now.
++func TestAutoCompress_HardMax_TriggersBeforeMinGap(t *testing.T) {
++	e, p := newHardLimitEngine(200_000, 3*time.Minute)
++	sends, _ := runAutoCompressTurn(t, e, p, 230_000, 15*time.Minute, true)
++	if len(sends) == 0 || sends[len(sends)-1] != "/compact" {
++		t.Fatalf("expected /compact via hard_max_tokens, got %v", sends)
++	}
++}
++
++// Above hard_max_tokens but only 1 minute after the previous auto-compress:
++// hard_min_gap (3m) blocks it, and the decision is not recorded as a compress.
++func TestAutoCompress_HardMax_RespectsHardMinGap(t *testing.T) {
++	e, p := newHardLimitEngine(200_000, 3*time.Minute)
++	sends, state := runAutoCompressTurn(t, e, p, 385_000, time.Minute, false)
++	if len(sends) != 0 {
++		t.Fatalf("expected no auto-compress inside hard_min_gap, got %v", sends)
++	}
++	state.mu.Lock()
++	last := state.lastAutoCompressAt
++	state.mu.Unlock()
++	if time.Since(last) < 50*time.Second {
++		t.Fatalf("lastAutoCompressAt must not move when nothing was compressed, got %v ago", time.Since(last))
++	}
++}
++
++// hard_max_tokens = 0 keeps the original behavior: 230K at 15 minutes waits for
++// the 60-minute min gap, exactly as before the patch.
++func TestAutoCompress_HardMaxDisabled_KeepsMinGap(t *testing.T) {
++	e, p := newHardLimitEngine(0, 0)
++	sends, _ := runAutoCompressTurn(t, e, p, 230_000, 15*time.Minute, false)
++	if len(sends) != 0 {
++		t.Fatalf("expected no auto-compress before min_gap with hard_max_tokens=0, got %v", sends)
++	}
++}
+diff --git a/core/autocompress_silent_test.go b/core/autocompress_silent_test.go
+new file mode 100644
+index 0000000..a909d5f
+--- /dev/null
++++ b/core/autocompress_silent_test.go
+@@ -0,0 +1,70 @@
++package core
++
++import (
++	"strings"
++	"testing"
++	"time"
++)
++
++// Local patch: CC_SILENT_AUTO_COMPRESS=1 must keep automatic compression out of
++// the chat, while the default behaviour still posts the "Compressing context" notice.
++func TestAutoCompress_SilentNoticeEnv(t *testing.T) {
++	for _, tc := range []struct {
++		name       string
++		env        string
++		wantNotice bool
++	}{
++		{"default posts notice", "", true},
++		{"silent env hides notice", "1", false},
++	} {
++		t.Run(tc.name, func(t *testing.T) {
++			t.Setenv("CC_SILENT_AUTO_COMPRESS", tc.env)
++
++			p := &stubPlatformEngine{n: "test"}
++			sess := newQueuingSession("auto-compress-silent")
++			agent := &stubCompressorAgent{cmd: "/compact"}
++			e := NewEngine("test", agent, []Platform{p}, "", LangEnglish)
++			e.SetAutoCompressConfig(true, 4, 0)
++			sess.contextUsage = &ContextUsage{UsedTokens: 50_000, ContextWindow: 200_000}
++
++			key := "test:user1"
++			state := &interactiveState{agentSession: sess, platform: p, replyCtx: "ctx"}
++			e.interactiveMu.Lock()
++			e.interactiveStates[key] = state
++			e.interactiveMu.Unlock()
++			session := e.sessions.GetOrCreateActive(key)
++			session.AddHistory("user", "hello world")
++
++			go e.processInteractiveEvents(state, session, e.sessions, key, "msg1", time.Now(), func() {}, nil, nil, 0)
++			sess.events <- Event{Type: EventResult, Content: "response", Done: true}
++
++			// Wait until /compact reached the agent, i.e. auto-compress really ran.
++			deadline := time.After(2 * time.Second)
++			for {
++				sess.sendMu.Lock()
++				n := len(sess.sendCalls)
++				sess.sendMu.Unlock()
++				if n > 0 {
++					break
++				}
++				select {
++				case <-deadline:
++					t.Fatal("timed out waiting for auto-compress send")
++				default:
++					time.Sleep(10 * time.Millisecond)
++				}
++			}
++			time.Sleep(200 * time.Millisecond) // let any async platform send land
++
++			gotNotice := false
++			for _, m := range p.getSent() {
++				if strings.Contains(m, "Compressing context") {
++					gotNotice = true
++				}
++			}
++			if gotNotice != tc.wantNotice {
++				t.Fatalf("compress notice sent = %v, want %v (sent: %q)", gotNotice, tc.wantNotice, p.getSent())
++			}
++		})
++	}
++}
+diff --git a/core/engine.go b/core/engine.go
+index f1aad67..dece26d 100644
+--- a/core/engine.go
++++ b/core/engine.go
+@@ -442,7 +442,16 @@ type Engine struct {
+ 	// unaffected and always use the heuristic; see the gate in
+ 	// processInteractiveEvents.
+ 	autoCompressAllowHeuristic bool
+-	resetOnIdle                time.Duration
++	// autoCompressHardMaxTokens is an optional hard ceiling (0 = disabled).
++	// When the estimate reaches it, auto-compress may fire before
++	// autoCompressMinGap has elapsed, so a very busy session does not keep
++	// growing far past max_tokens while it waits out the normal gap.
++	// autoCompressHardMinGapNanos still rate-limits that path so a compaction
++	// that leaves the context above the ceiling cannot thrash.
++	// Atomics because a config reload may update them while turns are running.
++	autoCompressHardMaxTokens   atomic.Int64
++	autoCompressHardMinGapNanos atomic.Int64
++	resetOnIdle                 time.Duration
+ 
+ 	// Reply footer composition flags. The footer renders up to two lines:
+ 	//   line 1 — model · [effort ·] out/in/cw/cr · ctx%   (gated by showContextIndicator)
+@@ -984,6 +993,61 @@ func (e *Engine) SetAutoCompressConfigWithSource(enabled bool, maxTokens int, mi
+ 	e.autoCompressMinGap = minGap
+ }
+ 
++// DefaultAutoCompressHardMinGap is the minimum spacing between auto-compress
++// runs triggered through the hard ceiling (see SetAutoCompressHardLimit).
++const DefaultAutoCompressHardMinGap = 3 * time.Minute
++
++// SetAutoCompressHardLimit configures the optional hard ceiling for automatic
++// context compression. When the estimate reaches hardMaxTokens (and is also at
++// or above max_tokens), auto-compress fires even if the normal min gap has not
++// elapsed yet, as long as at least hardMinGap has passed since the previous
++// automatic compression. hardMaxTokens <= 0 disables the ceiling, leaving the
++// original max_tokens + min_gap behavior unchanged. hardMinGap <= 0 falls back
++// to DefaultAutoCompressHardMinGap.
++func (e *Engine) SetAutoCompressHardLimit(hardMaxTokens int, hardMinGap time.Duration) {
++	if hardMaxTokens < 0 {
++		hardMaxTokens = 0
++	}
++	if hardMinGap <= 0 {
++		hardMinGap = DefaultAutoCompressHardMinGap
++	}
++	e.autoCompressHardMaxTokens.Store(int64(hardMaxTokens))
++	e.autoCompressHardMinGapNanos.Store(int64(hardMinGap))
++}
++
++// autoCompressDecision decides whether a turn whose context estimate is
++// `estimate` should auto-compress, given the time of the previous automatic
++// compression (`last`, zero if none). It returns the decision and the reason:
++//
++//   - "normal": estimate >= max_tokens and min_gap has elapsed (or no
++//     previous automatic compression);
++//   - "hard":   estimate >= max_tokens and >= hard_max_tokens, min_gap has
++//     not elapsed but hard_min_gap has;
++//   - "none":   no compression this turn.
++func (e *Engine) autoCompressDecision(estimate int, last, now time.Time) (bool, string) {
++	if estimate < e.autoCompressMaxTokens {
++		return false, "none"
++	}
++	if last.IsZero() {
++		return true, "normal"
++	}
++	gap := now.Sub(last)
++	if gap >= e.autoCompressMinGap {
++		return true, "normal"
++	}
++	hardMax := e.autoCompressHardMaxTokens.Load()
++	if hardMax > 0 && int64(estimate) >= hardMax {
++		hardMinGap := time.Duration(e.autoCompressHardMinGapNanos.Load())
++		if hardMinGap <= 0 {
++			hardMinGap = DefaultAutoCompressHardMinGap
++		}
++		if gap >= hardMinGap {
++			return true, "hard"
++		}
++	}
++	return false, "none"
++}
++
+ // SetResetOnIdle configures automatic session rotation after prolonged inactivity.
+ // A zero or negative duration disables the behavior.
+ func (e *Engine) SetResetOnIdle(d time.Duration) {
+@@ -3360,6 +3424,11 @@ func (e *Engine) maybeAutoResetSessionOnIdle(p Platform, msg *Message, sessions
+ 		"threshold", e.resetOnIdle,
+ 	)
+ 
++	// Local patch: CC_SILENT_IDLE_RESET=1 keeps automatic idle session rotation
++	// notices out of the chat (the rotation still happens and is logged; manual
++	// /new still replies as before).
++	silentIdleReset := os.Getenv("CC_SILENT_IDLE_RESET") == "1"
++
+ 	// Check if the old session has an agent process that needs graceful
+ 	// shutdown. If so, tell the user we're wrapping up before blocking.
+ 	e.interactiveMu.Lock()
+@@ -3367,7 +3436,7 @@ func (e *Engine) maybeAutoResetSessionOnIdle(p Platform, msg *Message, sessions
+ 	hasAgent := hasState && state != nil && state.agentSession != nil && state.agentSession.Alive()
+ 	e.interactiveMu.Unlock()
+ 
+-	if hasAgent {
++	if hasAgent && !silentIdleReset {
+ 		// Notify the user before the potentially long close. The close
+ 		// returns as soon as the process exits (usually seconds), but
+ 		// Stop hooks can take up to 120s.
+@@ -3391,7 +3460,9 @@ func (e *Engine) maybeAutoResetSessionOnIdle(p Platform, msg *Message, sessions
+ 	e.cleanupInteractiveState(interactiveKey)
+ 	session.UnlockWithoutUpdate(lockGen)
+ 
+-	e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgSessionAutoResetIdle, int(e.resetOnIdle/time.Minute)))
++	if !silentIdleReset {
++		e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgSessionAutoResetIdle, int(e.resetOnIdle/time.Minute)))
++	}
+ 	return newSession, newGen
+ }
+ 
+@@ -3411,7 +3482,12 @@ func (e *Engine) queueMessageForBusySession(p Platform, msg *Message, interactiv
+ 	// queued message before adoptPendingFromPlaceholder sees it.
+ 	state.mu.Lock()
+ 	e.interactiveMu.Unlock()
+-	defer state.mu.Unlock()
++	stateLocked := true
++	defer func() {
++		if stateLocked {
++			state.mu.Unlock()
++		}
++	}()
+ 
+ 	// Allow queueing when agentSession is nil (session is starting up,
+ 	// issue #565). Only reject if the session was established and died.
+@@ -3429,10 +3505,21 @@ func (e *Engine) queueMessageForBusySession(p Platform, msg *Message, interactiv
+ 		e.logStaleUserMessageDropped("reject_before_queue", msg, interactiveKey, snap)
+ 		return true
+ 	}
++	silentQueueNotice := os.Getenv("CC_SILENT_QUEUE_NOTICE") == "1"
+ 	if len(state.pendingMessages) >= e.maxQueuedMessages {
+ 		depth := len(state.pendingMessages)
+-		e.reply(p, msg.ReplyCtx, fmt.Sprintf(e.i18n.T(MsgQueueFull), depth))
+-		return true // handled: queue-full reply sent
++		stateLocked = false
++		state.mu.Unlock()
++		if silentQueueNotice {
++			slog.Warn("message queue full, dropping silently",
++				"session", msg.SessionKey,
++				"user", msg.UserName,
++				"queue_depth", depth,
++			)
++		} else {
++			e.reply(p, msg.ReplyCtx, fmt.Sprintf(e.i18n.T(MsgQueueFull), depth))
++		}
++		return true // handled: queue-full handled
+ 	}
+ 	state.pendingMessages = append(state.pendingMessages, queuedMessage{
+ 		messageID:         msg.MessageID,
+@@ -3462,6 +3549,8 @@ func (e *Engine) queueMessageForBusySession(p Platform, msg *Message, interactiv
+ 	}
+ 	runMessageAccepted(msg)
+ 	queueDepth := len(state.pendingMessages)
++	stateLocked = false
++	state.mu.Unlock()
+ 
+ 	slog.Debug("user message accepted into queue",
+ 		"session", msg.SessionKey,
+@@ -3476,7 +3565,9 @@ func (e *Engine) queueMessageForBusySession(p Platform, msg *Message, interactiv
+ 		"user", msg.UserName,
+ 		"queue_depth", queueDepth,
+ 	)
+-	e.reply(p, msg.ReplyCtx, e.i18n.T(MsgMessageQueued))
++	if !silentQueueNotice {
++		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgMessageQueued))
++	}
+ 	return true
+ }
+ 
+@@ -6317,15 +6408,18 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
+ 				// dropping context still in use, or never compacts at all.
+ 				decidable := estimateSource == "exact" || !hasReporter || e.autoCompressAllowHeuristic
+ 				if decidable {
+-					triggered := estimate >= e.autoCompressMaxTokens &&
+-						(last.IsZero() || now.Sub(last) >= e.autoCompressMinGap)
++					// triggered = estimate >= max && (last.IsZero() || gap >= minGap ||
++					//   (hardMax > 0 && estimate >= hardMax && gap >= hardMinGap))
++					triggered, triggerReason := e.autoCompressDecision(estimate, last, now)
+ 					slog.Info("auto-compress: decision",
+ 						"estimate", estimate,
+ 						"estimate_source", estimateSource,
+ 						"usage_source", usageSource,
+ 						"heuristic_estimate", contextEstimate,
+ 						"max_tokens", e.autoCompressMaxTokens,
++						"hard_max_tokens", e.autoCompressHardMaxTokens.Load(),
+ 						"triggered", triggered,
++						"trigger_reason", triggerReason,
+ 					)
+ 					if triggered {
+ 						triggerAutoCompress = true
+@@ -6621,11 +6715,16 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
+ 					slog.Info("auto-compress: triggering", "session", sessionKey)
+ 
+ 					// Notify user before compressing so they know the context is about to change.
+-					compressNotice := e.i18n.T(MsgCompressing)
+-					if tokenEst > 0 {
+-						compressNotice = fmt.Sprintf("%s (~%dk tokens)", compressNotice, tokenEst/1000)
++					// Local patch: CC_SILENT_AUTO_COMPRESS=1 keeps automatic compression
++					// out of the chat entirely (runCompress already hides its result for
++					// auto runs); a manual /compress still reports progress.
++					if os.Getenv("CC_SILENT_AUTO_COMPRESS") != "1" {
++						compressNotice := e.i18n.T(MsgCompressing)
++						if tokenEst > 0 {
++							compressNotice = fmt.Sprintf("%s (~%dk tokens)", compressNotice, tokenEst/1000)
++						}
++						e.send(state.platform, state.replyCtx, compressNotice)
+ 					}
+-					e.send(state.platform, state.replyCtx, compressNotice)
+ 
+ 					// Run compress inline while the session is still locked.
+ 					e.runCompress(state, session, sessions, sessionKey, state.platform, state.replyCtx, true, lockGen)
+@@ -7024,6 +7123,11 @@ func (e *Engine) drainPendingMessages(state *interactiveState, session *Session,
+ 			return false
+ 		}
+ 
++		// Stop any active unsolicited reader before draining and sending the
++		// queued message — otherwise the unsolicited reader competes on
++		// as.Events(), steals EventResult, and hangs processInteractiveEvents
++		// permanently while holding the session busy lock.
++		e.stopUnsolicitedReader(state)
+ 		drainEvents(as.Events())
+ 
+ 		session.AddHistory("user", queued.content)
+@@ -7044,6 +7148,17 @@ func (e *Engine) drainPendingMessages(state *interactiveState, session *Session,
+ 
+ 		slog.Info("processing queued message", "session", sessionKey)
+ 		e.processInteractiveEvents(state, session, sessions, sessionKey, queued.messageID, time.Now(), stopTyping, sendDone, queued.replyCtx, lockGen)
++
++		// Restart unsolicited reader if queue looks empty and session is still alive,
++		// before looping back to atomically unlock the session.
++		state.mu.Lock()
++		hasMore := len(state.pendingMessages) > 0
++		alive := state.agentSession != nil && state.agentSession.Alive() && !state.stopped && !state.eventsNeedResync
++		wsDir := state.workspaceDir
++		state.mu.Unlock()
++		if !hasMore && alive {
++			e.startUnsolicitedReader(state, session, sessions, sessionKey, wsDir)
++		}
+ 	}
+ }
+ 
+diff --git a/core/idlereset_silent_test.go b/core/idlereset_silent_test.go
+new file mode 100644
+index 0000000..4cf40e3
+--- /dev/null
++++ b/core/idlereset_silent_test.go
+@@ -0,0 +1,101 @@
++package core
++
++import (
++	"strings"
++	"testing"
++	"time"
++)
++
++// Local patch: CC_SILENT_IDLE_RESET=1 must keep automatic idle-reset notices
++// (both graceful-closing and auto-reset notifications) out of the chat while
++// still rotating to a fresh session; default behaviour still posts the notice.
++func TestAutoResetOnIdle_SilentNoticeEnv(t *testing.T) {
++	for _, tc := range []struct {
++		name       string
++		env        string
++		wantNotice bool
++	}{
++		{"default posts notice", "", true},
++		{"silent env hides notice", "1", false},
++	} {
++		t.Run(tc.name, func(t *testing.T) {
++			t.Setenv("CC_SILENT_IDLE_RESET", tc.env)
++
++			p := &stubPlatformEngine{n: "test"}
++			agentSession := newResultAgentSession("fresh reply")
++			agent := &resultAgent{session: agentSession}
++			e := NewEngine("test", agent, []Platform{p}, "", LangEnglish)
++			e.SetResetOnIdle(60 * time.Minute)
++
++			key := "qq:g:100000001"
++			old := e.sessions.GetOrCreateActive(key)
++			old.AddHistory("user", "stale context")
++			old.SetAgentSessionID("old-session", "stub")
++			staleAt := time.Now().Add(-2 * time.Hour)
++			old.mu.Lock()
++			old.LastUserActivity = staleAt
++			old.UpdatedAt = staleAt
++			old.mu.Unlock()
++
++			// Attach a live agent session so the graceful-closing branch is exercised too.
++			prevAgent := newQueuingSession("old-live-agent")
++			e.interactiveMu.Lock()
++			e.interactiveStates[key] = &interactiveState{
++				agentSession: prevAgent,
++				platform:     p,
++				replyCtx:     "ctx",
++			}
++			e.interactiveMu.Unlock()
++
++			msg := &Message{
++				SessionKey: key,
++				Platform:   "test",
++				UserID:     "u1",
++				UserName:   "user",
++				Content:    "hello after idle",
++				ReplyCtx:   "ctx",
++			}
++			e.handleMessage(p, msg)
++
++			deadline := time.After(2 * time.Second)
++			for {
++				active := e.sessions.GetOrCreateActive(key)
++				sent := p.getSent()
++				hasFresh := false
++				for _, m := range sent {
++					if m == "fresh reply" {
++						hasFresh = true
++						break
++					}
++				}
++				if active.ID != old.ID && len(active.GetHistory(0)) >= 2 && hasFresh {
++					break
++				}
++				select {
++				case <-deadline:
++					t.Fatalf("timed out waiting for idle auto-reset, sent=%q active=%s old=%s", sent, active.ID, old.ID)
++				default:
++					time.Sleep(10 * time.Millisecond)
++				}
++			}
++
++			sent := p.getSent()
++			gotAutoReset := false
++			gotClosing := false
++			for _, m := range sent {
++				if strings.Contains(m, "Session auto-reset") {
++					gotAutoReset = true
++				}
++				if strings.Contains(m, "Wrapping up your previous session") {
++					gotClosing = true
++				}
++			}
++			if gotAutoReset != tc.wantNotice {
++				t.Fatalf("auto-reset notice sent = %v, want %v (sent: %q)", gotAutoReset, tc.wantNotice, sent)
++			}
++			if gotClosing != tc.wantNotice {
++				t.Fatalf("graceful-closing notice sent = %v, want %v (sent: %q)", gotClosing, tc.wantNotice, sent)
++			}
++		})
++	}
++}
+diff --git a/core/management.go b/core/management.go
+index 240ba7a..9f17c9a 100644
+--- a/core/management.go
++++ b/core/management.go
+@@ -202,8 +202,14 @@ func (m *ManagementServer) Start() {
+ 	mux := http.NewServeMux()
+ 	handler := m.buildHandler(mux)
+ 
++	// Local patch: listen on loopback only unless CC_MANAGEMENT_HOST says
++	// otherwise (e.g. "0.0.0.0"), so the API is not reachable from the LAN.
++	host := os.Getenv("CC_MANAGEMENT_HOST")
++	if host == "" {
++		host = "127.0.0.1"
++	}
+ 	m.server = &http.Server{
+-		Addr:    fmt.Sprintf(":%d", m.port),
++		Addr:    fmt.Sprintf("%s:%d", host, m.port),
+ 		Handler: handler,
+ 	}
+ 	go func() {
+diff --git a/platform/qq/qq.go b/platform/qq/qq.go
+index c0ea7ea..7b7078f 100644
+--- a/platform/qq/qq.go
++++ b/platform/qq/qq.go
+@@ -153,7 +153,9 @@ func (p *Platform) readLoop(ctx context.Context) {
+ 		// Otherwise it's an event
+ 		postType, _ := payload["post_type"].(string)
+ 		if postType == "message" {
+-			p.handleMessage(payload)
++			// Dispatch asynchronously so handleMessage (which may call
++			// resolveGroupName / Reply via callAPI) never deadlocks readLoop.
++			go p.handleMessage(payload)
+ 		}
+ 	}
+ }

@@ -1,0 +1,91 @@
+"""Example template for creating a new custom QQ Bot plugin.
+
+Usage:
+1. Copy this file to ``plugins/my_feature.py`` (do NOT start filename with ``_``).
+2. Customize ``id``, ``name``, ``description``, ``token_impact``, ``settings_schema``,
+   and implement only the hooks your feature needs.
+3. Click「重新扫描插件目录」in WebUI「插件管理」(or restart WebUI) — your plugin
+   will appear automatically with a hot-reloadable toggle switch and settings panel.
+   When toggled OFF, none of its hooks or prompt fragments run (0 Token overhead).
+"""
+
+from typing import Any, Dict, List, Optional
+
+from bot_plugins import BotPlugin
+
+
+class ExampleCustomPlugin(BotPlugin):
+    id = "my_custom_feature"
+    name = "示例自定义插件"
+    version = "1.0.0"
+    category = "custom"
+    order = 200
+    description = "演示如何将后续新增的非必要功能写成可热开关插件，关闭后零 Token 消耗。"
+    author = "自定义"
+    builtin = False
+    default_enabled = False
+    hot_reload = True
+    affects_sandbox_prompt = True
+
+    token_impact = {
+        "level": "low",
+        "per_turn_tokens": 60,
+        "per_session_tokens": 40,
+        "background_llm": False,
+        "extra_turns": False,
+        "summary": "每轮注入约 60 tokens 自定义规则，关闭后完全不注入",
+    }
+
+    settings_schema = (
+        {
+            "key": "trigger_keyword",
+            "label": "触发关键词",
+            "type": "str",
+            "default": "彩蛋",
+            "description": "仅当消息包含该关键词时才注入附加提示词，进一步节省 Token",
+        },
+        {
+            "key": "extra_note",
+            "label": "附加上下文说明",
+            "type": "str",
+            "default": "用户触发了自定义彩蛋插件，可以用轻松可爱的语气回应一句。",
+            "description": "命中关键词时注入给模型的指令",
+        },
+    )
+
+    def get_system_prompt_fragment(self, settings: Dict[str, Any]) -> str:
+        # Optional: compiled into chat-sandbox/GEMINI.md ONLY while this plugin is enabled.
+        return ""
+
+    def on_prompt_sections(
+        self, ctx: Dict[str, Any], settings: Dict[str, Any]
+    ) -> List[str]:
+        # Runs in agy-acp-wrapper.py ONLY while this plugin is enabled.
+        # Available ctx keys: is_group, is_dm, is_admin, group_id, sender_id,
+        # actor_role, user_text, directly_addressed, is_lurking
+        kw = str(settings.get("trigger_keyword") or "").strip()
+        note = str(settings.get("extra_note") or "").strip()
+        user_text = str(ctx.get("user_text") or "")
+        if kw and note and kw in user_text:
+            return ["[自定义插件: {}]".format(note)]
+        return []
+
+    def on_response_postprocess(
+        self, text: str, ctx: Dict[str, Any], settings: Dict[str, Any]
+    ) -> str:
+        # Runs in agy-acp-wrapper.py on final reply ONLY while this plugin is enabled.
+        return text
+
+    def on_ws_inbound(
+        self, event: Dict[str, Any], ctx: Dict[str, Any], settings: Dict[str, Any]
+    ) -> Optional[Dict[str, Any]]:
+        # Runs in onebot-ws-guard.py on inbound OneBot events ONLY while enabled.
+        # Return {"drop": True} to drop, {"event": modified_event} to rewrite, or None.
+        return None
+
+    def on_ws_outbound(
+        self, payload: Dict[str, Any], ctx: Dict[str, Any], settings: Dict[str, Any]
+    ) -> Optional[Dict[str, Any]]:
+        # Runs in onebot-ws-guard.py on outbound OneBot payloads ONLY while enabled.
+        # Return {"drop": True} to drop, {"payload": modified_payload} to rewrite, or None.
+        return None

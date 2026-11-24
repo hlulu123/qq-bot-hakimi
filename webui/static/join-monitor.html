@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="color-scheme" content="light dark" />
+  <title>入群盯盘 · 哈基米</title>
+  <link
+    rel="icon"
+    type="image/svg+xml"
+    href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%2317171a'/%3E%3Cpath d='M17 27 L20 15 L28 21 Q32 20.2 36 21 L44 15 L47 27 Q50 32 49 38 C48 46 41 50 32 50 C23 50 16 46 15 38 Q14 32 17 27 Z' fill='%23ffffff'/%3E%3Ccircle cx='26' cy='35' r='2.4' fill='%2317171a'/%3E%3Ccircle cx='38' cy='35' r='2.4' fill='%2317171a'/%3E%3C/svg%3E"
+  />
+  <link rel="stylesheet" href="/static/styles.css" />
+  <style>
+    html, body {
+      height: 100%;
+      background: var(--bg);
+    }
+
+    .jm-shell {
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      background: var(--bg);
+    }
+
+    .jm-header {
+      position: sticky;
+      top: 0;
+      z-index: 30;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 10px 14px;
+      background: var(--bg);
+      border-bottom: 1px solid var(--border);
+      box-shadow: var(--shadow-sm);
+    }
+
+    .jm-brand {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      min-width: 0;
+    }
+
+    .jm-brand-mark {
+      width: 26px;
+      height: 26px;
+      border-radius: 8px;
+      background: var(--primary);
+      color: var(--primary-text);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+    }
+
+    .jm-title-wrap {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+      flex-wrap: wrap;
+    }
+
+    .jm-title {
+      margin: 0;
+      font-size: 14.5px;
+      font-weight: 650;
+      letter-spacing: -0.015em;
+      color: var(--text);
+      white-space: nowrap;
+    }
+
+    .jm-sse-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      height: 22px;
+      padding: 0 8px;
+      border-radius: 999px;
+      background: var(--surface-2);
+      color: var(--text-secondary);
+      font-size: 11.5px;
+      font-weight: 500;
+      white-space: nowrap;
+    }
+
+    .jm-sse-pill.is-live {
+      background: var(--success-soft);
+      color: var(--success);
+    }
+
+    .jm-sse-pill.is-warn {
+      background: var(--amber-soft);
+      color: var(--amber);
+    }
+
+    .jm-actions {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      flex-shrink: 0;
+    }
+
+    .jm-icon-btn {
+      width: 30px;
+      height: 30px;
+      border-radius: 8px;
+      border: 1px solid transparent;
+      background: transparent;
+      color: var(--text-secondary);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      transition: background-color 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+      text-decoration: none !important;
+    }
+
+    .jm-icon-btn:hover:not(:disabled) {
+      background: var(--surface-2);
+      color: var(--text);
+    }
+
+    .jm-icon-btn:disabled {
+      opacity: 0.45;
+      cursor: not-allowed;
+    }
+
+    .jm-icon-btn.is-active {
+      background: var(--accent-soft);
+      color: var(--accent);
+    }
+
+    .jm-console-link {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      height: 28px;
+      padding: 0 9px;
+      margin-left: 2px;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      background: var(--surface);
+      color: var(--text-secondary);
+      font-size: 12px;
+      font-weight: 500;
+      white-space: nowrap;
+      text-decoration: none !important;
+      transition: border-color 0.15s ease, color 0.15s ease, background-color 0.15s ease;
+    }
+
+    .jm-console-link:hover {
+      border-color: var(--border-strong);
+      background: var(--surface-hover);
+      color: var(--text);
+    }
+
+    .jm-main {
+      flex: 1;
+      min-height: 0;
+      padding: 12px 14px 24px;
+      max-width: 720px;
+      width: 100%;
+      margin: 0 auto;
+    }
+
+    @media (max-width: 440px) {
+      .jm-header {
+        padding: 8px 10px;
+      }
+      .jm-main {
+        padding: 10px 10px 20px;
+      }
+      .jm-console-link span.jm-link-text {
+        display: none;
+      }
+      .jm-console-link {
+        width: 30px;
+        height: 30px;
+        padding: 0;
+        justify-content: center;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="jm-shell">
+    <header class="jm-header" id="jm-header">
+      <div class="jm-brand">
+        <span class="jm-brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 32 32" width="16" height="16" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path d="M6.5 13.2 L8.2 6.4 C8.4 5.7 9.2 5.5 9.7 6 L13.6 9.8 Q16 9.3 18.4 9.8 L22.3 6 C22.8 5.5 23.6 5.7 23.8 6.4 L25.5 13.2 C26.7 15.8 26.6 19 25.1 21.6 C23.4 24.6 20.2 26.2 16 26.2 C11.8 26.2 8.6 24.6 6.9 21.6 C5.4 19 5.3 15.8 6.5 13.2 Z" fill="currentColor"/>
+            <circle cx="12.2" cy="17.4" r="1.5" fill="var(--brand-eye)"/>
+            <circle cx="19.8" cy="17.4" r="1.5" fill="var(--brand-eye)"/>
+          </svg>
+        </span>
+        <div class="jm-title-wrap">
+          <h1 class="jm-title">入群申请盯盘</h1>
+          <span class="jm-sse-pill" id="jm-sse-pill" title="实时事件流状态">
+            <span class="status-dot"></span>连接中…
+          </span>
+        </div>
+      </div>
+
+      <div class="jm-actions">
+        <button type="button" class="jm-icon-btn" id="jm-sound-btn" title="声音提醒" aria-label="切换声音提醒"></button>
+        <button type="button" class="jm-icon-btn" id="jm-notify-btn" title="桌面通知" aria-label="切换桌面通知"></button>
+        <button type="button" class="jm-icon-btn" id="jm-sync-btn" title="同步 NapCat 入群申请" aria-label="同步 NapCat"></button>
+        <button type="button" class="jm-icon-btn" id="jm-theme-btn" title="切换浅色 / 深色主题" aria-label="切换主题"></button>
+        <a class="jm-console-link" id="jm-console-link" href="/#requests" target="_blank" rel="noopener noreferrer" title="在主控制台打开完整页面">
+          <span id="jm-console-icon"></span>
+          <span class="jm-link-text">打开控制台</span>
+        </a>
+      </div>
+    </header>
+
+    <main class="jm-main" id="jm-root" tabindex="-1">
+      <div class="stack-sm">
+        <div class="loading-skeleton" style="height:40px;"></div>
+        <div class="loading-skeleton" style="height:124px;"></div>
+        <div class="loading-skeleton" style="height:124px;"></div>
+      </div>
+    </main>
+  </div>
+
+  <div class="toast-container" id="toast-container" aria-live="polite" aria-atomic="true"></div>
+  <div id="modal-root"></div>
+
+  <script type="module" src="/static/join-monitor.js"></script>
+</body>
+</html>

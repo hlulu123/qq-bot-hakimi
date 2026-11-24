@@ -1,0 +1,121 @@
+# =============================================================================
+# QQ-ACP 配置文件模板（cc-connect + NapCatQQ + Antigravity CLI ACP）
+#
+# 提示：运行一键安装脚本（或 `python setup_wizard.py`）会自动根据当前目录、
+# Python 路径、管理员 QQ 与随机密钥生成正式的 `config.toml`，一般无需手动填写。
+# 若手动配置，请将所有 <...> 占位符与示例 QQ 号替换为真实值（Windows 路径请用
+# 正斜杠 `/` 或双反斜杠 `\\`）。
+# =============================================================================
+
+language = "zh"
+data_dir = "<PROJECT_DIR>/data"
+
+[log]
+level = "info"
+
+# QQ 聊天窗适配：隐藏思考过程、工具刷屏及底部模型/Token/路径尾巴
+[display]
+mode = "compact"
+thinking_messages = false
+tool_messages = false
+reply_footer = false
+show_context_indicator = false
+hide_agent_footer = true
+
+# 关闭全局机械限流提示，避免全群监听水群时弹出“请慢一点”刷屏
+# 发言节流与防刷屏由 agy-acp-wrapper.py 的静默冷却机制控制
+[rate_limit]
+max_messages = 0
+window_secs = 60
+
+# 本地管理 API：http://127.0.0.1:9820
+# 本地补丁默认让它仅监听 127.0.0.1，局域网其他设备无法访问；
+# 确实需要从外部机器访问时，可在启动前设置环境变量 CC_MANAGEMENT_HOST=0.0.0.0
+[management]
+enabled = true
+port = 9820
+token = "<REPLACE_WITH_MANAGEMENT_TOKEN>"
+
+# =============================================================================
+# 主项目：Antigravity CLI (ACP) <-> QQ (NapCat OneBot v11)
+# =============================================================================
+[[projects]]
+name = "qq-gemini-acp"
+
+# 多群资源与会话生命周期管理：
+# 1. 某群空闲 30 分钟自动回收对应的 live agent 子进程释放内存（保留会话 ID，下次发消息无感恢复）
+agent_session_idle_timeout_mins = 30
+# 2. 某群冷场超过 6 小时后自动开启清爽新会话（配合每用户长期记忆 + 近期群聊上下文，既防漂移又不失忆）
+reset_on_idle_mins = 360
+
+# 关闭回复底部的工作目录尾巴（reply_footer / show_context_indicator 统一在上方 [display] 配置）
+show_workdir_indicator = false
+
+# 将发言人 QQ 号、群名片/昵称与群号注入到每条消息前，便于区分谁对谁说话与权限判断
+inject_sender = true
+
+# 管理员 QQ 白名单（多个管理员用英文逗号分隔，需与 bot.env 的 ADMIN_QQ_IDS 一致）
+admin_from = "1000000001"
+
+# 上下文自动压缩：超过 120K Token 后压缩；两次压缩至少间隔 15 分钟。
+# 硬上限（本地补丁新增）：超过 200K 时不必等满 15 分钟，距上次压缩满 3 分钟即可再压
+[projects.auto_compress]
+enabled = true
+max_tokens = 120000
+min_gap_mins = 15
+hard_max_tokens = 200000
+hard_min_gap_mins = 3
+allow_heuristic = false
+
+# 分角色权限控制：管理员放开全部命令；普通群友/其他人禁用所有斜杠命令，仅可正常聊天
+[projects.users]
+default_role = "member"
+
+[projects.users.roles.admin]
+user_ids = ["1000000001"]
+disabled_commands = []
+rate_limit = { max_messages = 0, window_secs = 60 }
+
+[projects.users.roles.member]
+user_ids = ["*"]
+disabled_commands = ["*"]
+rate_limit = { max_messages = 0, window_secs = 60 }
+
+[projects.agent]
+type = "acp"
+
+[projects.agent.options]
+work_dir = "<PROJECT_DIR>/workspace"
+# 通过 ACP 包装脚本启动 agy acp（每个会话一个进程）：
+# 1. 会话隔离：仅管理员私聊在 workspace/ 运行并允许本地工具；
+#    群聊与普通用户私聊一律隔离在 chat-sandbox/，仅放行只读联网搜索
+# 2. 动态切换思考强度：群聊监听 low / 普通闲聊问答 medium / 管理员任务 xhigh
+# 3. 低频监听群聊：被点名认真回应，未点名默认潜水（NO_REPLY）
+# 4. 每用户长期记忆：按 QQ 号召回群聊/私聊隔离记忆，后台异步整理
+# 5. 群聊自动附带 NapCat 近期群聊记录（发言者、@对象、引用回复）
+cmd = "<PYTHON_BIN>"
+args = ["<PROJECT_DIR>/agy-acp-wrapper.py"]
+mode = "default"
+display_name = "Antigravity ACP"
+
+# 包装脚本、ws-guard、记忆模块的其余参数统一读取 bot.env，此处无需重复配置。
+# 注意：本文件中的 platforms.options.token、admin_from、users.roles.admin.user_ids
+# 必须与 bot.env 保持一致，否则 bot_runner.py 启动校验会拦截并提示差异。
+
+[[projects.platforms]]
+type = "qq"
+
+[projects.platforms.options]
+# 连接本地 OneBot WS 守护代理（127.0.0.1:3002 -> NapCat 127.0.0.1:3001）
+# 由 onebot-ws-guard.py 负责按群防并发死锁、过滤刷屏提示、过滤 Q群管家/@他人、长回复合并转发
+ws_url = "ws://127.0.0.1:3002"
+# NapCat Access Token（需与 bot.env 中的 NAPCAT_TOKEN 及 NapCat 配置完全一致）
+token = "<REPLACE_WITH_NAPCAT_TOKEN>"
+# NapCat OneBot HTTP API 地址（用于图片/附件收发及群聊历史上下文读取）
+http_url = "http://127.0.0.1:3000"
+# 允许所有人触发对话（具体特权执行权限由 admin_from / users 角色与 ACP 包装层严格限制）
+allow_from = "*"
+# 持续监听群聊消息；被点名或有意思时自然冒泡，无须发言时输出 NO_REPLY 静默潜水
+require_mention = false
+# 群聊内所有人共享同一个会话上下文，配合 inject_sender 与群聊历史准确分辨对话关系
+share_session_in_channel = true

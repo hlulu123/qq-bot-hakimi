@@ -1,0 +1,7 @@
+{
+  "host": "::",
+  "port": 6099,
+  "token": "<REPLACE_WITH_WEBUI_TOKEN>",
+  "loginRate": 10,
+  "autoLoginAccount": ""
+}

@@ -1,0 +1,20 @@
+services:
+  napcat:
+    image: ghcr.io/napneko/nodenapcat:latest
+    container_name: napcat
+    restart: unless-stopped
+    # 安全限制：所有端口仅绑定本机回环地址 127.0.0.1，同一局域网/公共 Wi-Fi 内其他设备无法访问
+    ports:
+      - "127.0.0.1:3000:3000"   # OneBot HTTP API
+      - "127.0.0.1:3001:3001"   # OneBot 正向 WebSocket（供 ws-guard 连接）
+      - "127.0.0.1:6099:6099"   # NapCat WebUI 管理与扫码面板
+    environment:
+      - TZ=Asia/Shanghai
+      - NAPCAT_GID=0
+      - NAPCAT_UID=0
+      # 填入机器人 QQ 号（可通过环境变量 BOT_QQ_ID 传入或由配置向导自动写入）
+      # 重建容器时会自动复用 ./napcat/QQ 中保存的登录态快速登录，免重复扫码
+      - NAPCAT_QUICK_ACCOUNT=${BOT_QQ_ID:-}
+    volumes:
+      - ./napcat/config:/app/napcat/config
+      - ./napcat/QQ:/root/.config/QQ

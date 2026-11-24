@@ -1,0 +1,44 @@
+# === Secrets, local configs & personal files (NEVER commit) ===
+/bot.env
+/config.toml
+/.config.toml.lock
+/docker-compose.napcat.yml
+.build_secrets.local
+*.local
+*.secret
+
+# === Runtime state, logs, databases & backups ===
+/data/
+/napcat/
+/backup/
+/chat-sandbox/
+
+# === Workspace: track persona GEMINI.md only; ignore all personal workspace files ===
+/workspace/*
+!/workspace/GEMINI.md
+
+# === Compiled binaries, build outputs & third-party tools ===
+/.tools/
+/dist/
+/installer/binaries/
+/patches/*.bak-*
+*.bak
+
+# === Python / Virtualenvs ===
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# === OS / Editor clutter ===
+.DS_Store
+Thumbs.db
+desktop.ini
+*.swp
+*.swo
+.vscode/
+.idea/
