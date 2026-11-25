@@ -2,6 +2,49 @@
 
 > 基于 **NapCatQQ（OneBot v11）+ cc-connect（本地补丁版）+ Antigravity CLI（ACP）** 的高拟真 QQ 群聊与个人助手机器人，内置 SQLite v2 分层长期记忆、模块化插件热重载、细粒度 QQ 动作权限、双层沙箱隔离与本地可视化 Web 控制台，支持 **macOS（Apple Silicon / Intel）** 与 **Windows 10/11**。
 
+## Web 控制台实机预览
+
+内置本地可视化控制台（纯 Python 标准库，仅监听 `127.0.0.1:8765`），支持一站式管理运行状态、插件省流、权限沙盒、Token 统计、长期记忆与人设编辑（点击图片可查看大图）：
+
+<table>
+  <tr>
+    <td align="center" width="50%">
+      <img src="./docs/screenshots/webui-overview.png" alt="控制台总览" />
+      <br />
+      <sub><b>控制台总览</b> · 服务链路状态、配置体检与运行指标一览</sub>
+    </td>
+    <td align="center" width="50%">
+      <img src="./docs/screenshots/webui-plugins.png" alt="模块化插件与省流预设" />
+      <br />
+      <sub><b>插件管理与省流预设</b> · 一键切换场景模式，实时预估 Token 节省</sub>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="50%">
+      <img src="./docs/screenshots/webui-permissions.png" alt="细粒度 QQ 动作权限与沙盒" />
+      <br />
+      <sub><b>权限与沙盒</b> · 按身份分级授权与高危操作二次确认</sub>
+    </td>
+    <td align="center" width="50%">
+      <img src="./docs/screenshots/webui-tokens.png" alt="分群 Token 用量统计" />
+      <br />
+      <sub><b>Token 用量统计</b> · 24 小时消耗趋势、沉默监听占比与分群明细</sub>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="50%">
+      <img src="./docs/screenshots/webui-memory.png" alt="长期记忆与群友画像" />
+      <br />
+      <sub><b>长期记忆档案</b> · 群友画像、私聊隔离、客观事实与 Sleep 整理</sub>
+    </td>
+    <td align="center" width="50%">
+      <img src="./docs/screenshots/webui-persona.png" alt="人设与角色卡分栏编辑器" />
+      <br />
+      <sub><b>人设与指令编辑</b> · 实时 Markdown 分栏预览、历史回滚与沙盒同步</sub>
+    </td>
+  </tr>
+</table>
+
 ## 快速开始
 
 ### 方式一：直接下载一键懒人包（推荐）
